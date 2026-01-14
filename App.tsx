@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import { DISH_BASES, INGREDIENTS, getRandomItem } from './constants';
 import { CrazyFoodCombo } from './types';
@@ -9,6 +9,15 @@ import { ChefHat, Shuffle, Eye, EyeOff, Printer } from 'lucide-react';
 const App: React.FC = () => {
   const [items, setItems] = useState<CrazyFoodCombo[]>([]);
   const [apiKeyMissing, setApiKeyMissing] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
+  
+  // Ref to track if the component is mounted to prevent state updates on unmount
+  const isMounted = useRef(true);
+
+  useEffect(() => {
+    isMounted.current = true;
+    return () => { isMounted.current = false; };
+  }, []);
 
   // Check API Key on mount
   useEffect(() => {
@@ -43,12 +52,16 @@ const App: React.FC = () => {
   const generateImageForItem = async (item: CrazyFoodCombo) => {
     try {
       const imageUrl = await generateFoodImage(item);
+      if (!isMounted.current) return;
+      
       setItems(prev => prev.map(i => 
         i.id === item.id 
           ? { ...i, imageUrl: imageUrl || undefined, isLoading: false } 
           : i
       ));
     } catch (error) {
+      if (!isMounted.current) return;
+      console.error("Error generating image:", error);
       setItems(prev => prev.map(i => 
         i.id === item.id 
           ? { ...i, isLoading: false, error: 'Failed' } 
@@ -58,19 +71,29 @@ const App: React.FC = () => {
   };
 
   const handleGeneratePoster = useCallback(async () => {
-    // Generate 10 placeholders
-    const newItems: CrazyFoodCombo[] = Array.from({ length: 10 }, () => createRandomCombo());
+    if (isGenerating) return;
+    setIsGenerating(true);
+
+    // Reduce count to 6 to avoid hitting rate limits too quickly and improve load time
+    const count = 6;
+    const newItems: CrazyFoodCombo[] = Array.from({ length: count }, () => createRandomCombo());
     setItems(newItems);
 
-    // Trigger API calls for each (sequential to avoid rate limits, or batched)
-    // Using a simple loop here. Gemini handles concurrency well, but let's be safe.
+    // Sequential processing with delay to avoid 429 "Quota exceeded" errors
     for (const item of newItems) {
-        // Trigger async without awaiting the whole loop
-        generateImageForItem(item); 
-        // Small delay to stagger requests slightly
-        await new Promise(r => setTimeout(r, 200)); 
+        if (!isMounted.current) break;
+        
+        // Wait for the individual generation to complete
+        await generateImageForItem(item); 
+        
+        // Add a 2-second delay between requests to be gentle on the API free tier
+        await new Promise(r => setTimeout(r, 2000)); 
     }
-  }, []);
+    
+    if (isMounted.current) {
+      setIsGenerating(false);
+    }
+  }, [isGenerating]);
 
   const handleRegenerateItem = async (id: string) => {
     const newItem = createRandomCombo();
@@ -136,10 +159,11 @@ const App: React.FC = () => {
         <div className="flex flex-wrap gap-2 justify-center no-print">
           <button 
             onClick={handleGeneratePoster}
-            className="flex items-center gap-2 px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-lg font-bold shadow-md transition-colors"
+            disabled={isGenerating}
+            className={`flex items-center gap-2 px-4 py-2 text-white rounded-lg font-bold shadow-md transition-colors ${isGenerating ? 'bg-gray-400 cursor-not-allowed' : 'bg-orange-500 hover:bg-orange-600'}`}
           >
-            <Shuffle size={18} />
-            Nuevo Póster
+            <Shuffle size={18} className={isGenerating ? 'animate-spin' : ''} />
+            {isGenerating ? 'Cocinando...' : 'Nuevo Póster'}
           </button>
           
           <button 
@@ -170,7 +194,7 @@ const App: React.FC = () => {
 
       {/* Grid */}
       <main className="flex-grow">
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-6 print:gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-3 gap-6 print:gap-4">
           {items.map((item) => (
             <FoodCard 
               key={item.id} 
